@@ -25,3 +25,9 @@ store runs on. English here; 繁體中文 (custom REST) in [`zh/`](zh/).
 
 The machine-readable contract (custom REST) is [`../openapi/custom-rest.v1.yaml`](../openapi/custom-rest.v1.yaml).
 Building the custom REST integration with an AI tool? See [`../AGENTS.md`](../AGENTS.md).
+
+## Platform architecture (maintainers)
+
+- [Azure MVP deployment architecture](architecture/azure-mvp-deployment.md) — accepted region,
+  Cloudflare/APIM/Container Apps topology, security boundaries, and the future Front Door migration
+  path.

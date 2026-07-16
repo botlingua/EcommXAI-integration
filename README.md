@@ -32,6 +32,7 @@ Your store gets an address — `your-shop.ecommxai.com` by default, or
 | [`docs/00-choose-your-platform.md`](docs/00-choose-your-platform.md) | Start here — pick your path |
 | [`docs/common/`](docs/common/) | Register · your domain · go-live (all platforms) |
 | [`docs/platforms/`](docs/platforms/) | Per-platform connect guides (custom-rest / shopify / woocommerce) |
+| [`docs/architecture/`](docs/architecture/) | Platform deployment decisions for maintainers |
 | [`openapi/`](openapi/) | Machine-readable contract — **custom REST only** |
 | [`examples/`](examples/) | Runnable Node + Python starters — **custom REST only** |
 | [`AGENTS.md`](AGENTS.md) · [`llms.txt`](llms.txt) | For AI coding agents (custom REST) |
