@@ -1,0 +1,3 @@
+# Spectral ruleset for the EcommX AI custom-rest OpenAPI spec.
+# CI lints openapi/*.yaml against the official OpenAPI (oas) rules.
+extends: ["spectral:oas"]

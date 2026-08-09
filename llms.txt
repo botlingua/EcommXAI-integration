@@ -1,0 +1,28 @@
+# EcommX AI — eCommerce Integration
+
+> Connect your store to EcommX AI so AI agents can discover products, inventory, categories, and drive
+> checkout. How you connect depends on your platform: Shopify / WooCommerce connect with an API key
+> (no code); a custom / in-house store implements 5 REST endpoints. You don't change your storefront.
+
+## Start
+- [Choose your platform](docs/00-choose-your-platform.md): decision table — Shopify vs WooCommerce vs custom REST.
+
+## Common (all platforms)
+- [Register](docs/common/register.md): the sign-up wizard.
+- [Your domain](docs/common/your-domain.md): a *.ecommxai.com subdomain, or your own domain via DNS (TXT + CNAME).
+- [Go live](docs/common/go-live.md): test the connection.
+
+## Connect by platform
+- [Shopify](docs/platforms/shopify/connect.md): Admin API token (shpat_…), no code.
+- [WooCommerce](docs/platforms/woocommerce/connect.md): REST consumer key/secret (ck_/cs_), no code.
+- [Custom REST](docs/platforms/custom-rest/overview.md): implement 5 endpoints.
+
+## Custom REST (the only path that writes code)
+- [OpenAPI 3.1 spec](openapi/custom-rest.v1.yaml): source of truth for all request/response shapes.
+- [AGENTS.md](AGENTS.md): rules and the fastest correct path for AI coding agents.
+- [Node starter](examples/merchant-starter-node) / [Python starter](examples/merchant-starter-python): runnable; swap the data provider for your catalog.
+
+## Key invariants (custom REST)
+- Money: price.amount is a decimal string ("189.00"), currency is ISO-4217.
+- SKU is the primary key; inventory 0 = out of stock, omit unknown SKUs.
+- Auth: Bearer token, merchant → platform; /health needs no auth.

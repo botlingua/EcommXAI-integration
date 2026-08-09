@@ -1,0 +1,792 @@
+openapi: 3.1.0
+info:
+  title: EcommX AI — Custom REST Integration API
+  version: "1.0.0"
+  summary: The REST contract a custom-eCommerce merchant implements for EcommX AI.
+  description: >-
+    This is the API **you (the merchant) implement** so the EcommX AI Gateway can
+    discover your products, inventory, and categories — and optionally drive checkout.
+
+
+    Direction is always **merchant → platform**: you expose one Base URL and generate
+    one Bearer token, then configure them in the EcommX AI dashboard. The Gateway calls
+    a fixed set of paths under your Base URL (e.g. `<base>/products`). The platform never
+    issues a token to you.
+
+
+    **Day-1 (required):** `GET /health`, `GET /products`, `GET /products/{id}`,
+    `GET /categories`, `GET /inventory`. Implement these five and AI agents can browse
+    your catalog.
+
+
+    **Optional (`x-status: stable`):** the `/checkout/*` operations. The Gateway does not
+    call them until your integration enables checkout; the shapes below are finalized for
+    v1. Payment is charged by the platform (via its payment processor) against your own PSP —
+    these endpoints handle reservation, totals, and order creation only, never a raw
+    payment token.
+
+
+    Webhooks (order/inventory change notifications) flow the other way — merchant → Gateway —
+    so they are documented in the guide, not in this merchant-implemented spec.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  contact:
+    name: EcommX AI Integration Support
+    url: https://github.com/botlingua/EcommXAI-integration
+
+servers:
+  - url: https://api.your-shop.example/v1
+    description: >-
+      Your merchant API Base URL. You choose the prefix; the Gateway appends fixed paths
+      (Base URL `https://api.your-shop.example/v1` → Gateway calls `…/v1/products`).
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: catalog
+    description: Day-1 required — product, category, and inventory reads.
+  - name: health
+    description: Day-1 required — liveness probe (no auth).
+  - name: checkout
+    description: Optional — let the platform drive reserve / totals / order creation (payment is handled separately by the platform payment processor).
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Liveness probe (no auth)
+      description: >-
+        Returns 200 + `{ "status": "ok" }` when your service is up. The dashboard
+        "Test connection" button and platform monitoring call this. No Bearer required;
+        do not query your DB here.
+      security: []
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+  /products:
+    get:
+      tags: [catalog]
+      operationId: listProducts
+      summary: List products (paginated)
+      description: >-
+        Returns a page of products. Each product carries its variants; the Gateway
+        flattens every variant into one catalog item keyed by SKU.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size. Default 50, max 200.
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: cursor
+          in: query
+          required: false
+          description: >-
+            Opaque pagination cursor returned as `next_cursor` by the previous page.
+            The platform never parses it — round-trips it verbatim. Omit on first page.
+          schema: { type: string }
+        - name: category_id
+          in: query
+          required: false
+          description: Optional — restrict to one category.
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of products.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProductList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /products/{id}:
+    get:
+      tags: [catalog]
+      operationId: getProduct
+      summary: Get one product by product id or SKU
+      description: >-
+        Convenience lookup. The platform can fall back to `GET /products` + linear filter,
+        so this is optional to implement — but recommended for large catalogs (10k+ SKUs).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: A product id or a variant SKU (your system's identifier).
+          schema: { type: string }
+      responses:
+        "200":
+          description: The matching product.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Product" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /categories:
+    get:
+      tags: [catalog]
+      operationId: listCategories
+      summary: List categories (tree via parent_id)
+      description: >-
+        Returns all categories. Express a tree with self-referential `parent_id`
+        (a root category has `parent_id: null`).
+      responses:
+        "200":
+          description: All categories.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategoryList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /inventory:
+    get:
+      tags: [catalog]
+      operationId: getInventory
+      summary: Batch inventory lookup
+      description: >-
+        Returns available quantities for the requested SKUs. **Omit** SKUs that do not
+        exist (so the platform can tell "out of stock" from "unknown SKU"). Max 200 SKUs
+        per call; the platform auto-batches larger sets.
+      parameters:
+        - name: skus
+          in: query
+          required: true
+          description: >-
+            Comma-separated SKUs, e.g. `?skus=TENT-2P-GREEN,STOVE-MSR` (max 200). If empty or
+            missing, returning an empty `items` list (200) is acceptable; returning 400 is also fine.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Inventory levels for the known SKUs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InventoryList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /checkout/reserve:
+    post:
+      tags: [checkout]
+      operationId: reserveInventory
+      summary: "Reserve inventory before checkout"
+      x-status: stable
+      description: >-
+        Optional capability. Live re-check stock and hold it idempotently for a few minutes
+        while the buyer pays. `status: "oversold"` is a **200 business outcome** the platform
+        surfaces to the buyer, NOT an HTTP error. Persist the `Idempotency-Key` per endpoint.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ReserveRequest" }
+      responses:
+        "200":
+          description: Reservation result (status ok or oversold).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReserveResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /checkout/calculate-totals:
+    post:
+      tags: [checkout]
+      operationId: calculateTotals
+      summary: "Calculate cart totals — tax / shipping / discount"
+      x-status: stable
+      description: >-
+        Optional capability. Compute totals (tax, shipping, promotions) so the agent shows an
+        accurate price before order creation. Non-mutating — the `Idempotency-Key` header is
+        accepted but not required. Unknown / expired promotion codes do NOT fail the call:
+        omit them from the discount and list them under `metadata.rejected_promotion_codes`.
+        Tax is computed on the post-discount amount (subtotal minus discount); example numbers
+        are illustrative only. Your store is the pricing source of truth: compute the subtotal
+        from your own catalog. The request's `unit_price_cents` is the platform's view (advisory) —
+        use it to detect drift, but never under-charge based on it.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKeyOptional"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TotalsRequest" }
+      responses:
+        "200":
+          description: Totals breakdown.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TotalsBreakdown" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /checkout/complete:
+    post:
+      tags: [checkout]
+      operationId: completeOrder
+      summary: "Create the order"
+      x-status: stable
+      description: >-
+        Optional capability. Create the order in your system from the cart, buyer, and
+        already-authorized payment. The platform charges payment separately (via its
+        payment processor, against your PSP) BEFORE calling this and passes
+        `payment_authorization_id` for reconciliation — your endpoint never receives a raw
+        payment token and must not charge. Build the order at `totals.total_cents` (the
+        amount already authorized); do NOT recompute a different total. Must be idempotent:
+        persist the `Idempotency-Key` per endpoint so a retry returns the same order.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CompleteOrderRequest" }
+      responses:
+        "201":
+          description: Order created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderResult" }
+        "200":
+          description: Idempotent replay — same order as the original request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OrderResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: >-
+            Conflict — error.type is `inventory_oversold` (stock gone at completion),
+            `reservation_expired`, or `idempotency_conflict`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /checkout/create-hosted:
+    post:
+      tags: [checkout]
+      operationId: createHostedCheckout
+      summary: "Create a hosted checkout (buyer pays on your site)"
+      x-status: stable
+      description: >-
+        Optional capability — the "handoff" payment path (alternative to the platform charging a
+        token). Instead of the platform charging, create a hosted checkout in your system and
+        return a `checkout_url` on your own storefront; the platform redirects the buyer there to
+        pay. Return a `checkout_ref` — a stable correlation key the platform stores and later
+        polls with (see `GET /checkout/reconcile/{ref}`). The `checkout_url` MUST be same-origin
+        with the store URL you configured in the dashboard (open-redirect guard). No payment token
+        is passed on this path. Must be idempotent: persist the `Idempotency-Key` per endpoint so
+        a retry returns the same checkout.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateHostedRequest" }
+      responses:
+        "201":
+          description: Hosted checkout created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateHostedResult" }
+        "200":
+          description: Idempotent replay — same hosted checkout as the original request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CreateHostedResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /checkout/reconcile/{ref}:
+    get:
+      tags: [checkout]
+      operationId: reconcileHostedCheckout
+      summary: "Poll a hosted checkout for payment / order status"
+      x-status: stable
+      description: >-
+        Optional capability — pairs with `create-hosted`. The platform polls this with the
+        `checkout_ref` you returned to learn whether the buyer paid and an order exists. Return
+        `status: "paid"` with an `order_id` once the order is created and paid — the platform then
+        records the order (your store stays the source of truth for the amount). Return
+        `status: "pending"` (order_id null) while the buyer has not completed payment, or 404 if
+        the ref is unknown. This is the reconciliation path for hosted checkouts that have no
+        order webhook.
+      parameters:
+        - name: ref
+          in: path
+          required: true
+          description: The `checkout_ref` returned by create-hosted.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Reconcile status for the hosted checkout.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HostedReconcileResult" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        The Bearer token you generate and configure in the EcommX AI dashboard
+        (Commerce → Connection). Direction is merchant → platform; the platform never
+        issues you a token. Validate the `Authorization: Bearer <token>` header on every
+        request except `/health`.
+
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >-
+        Required on mutating checkout calls (reserve, complete). Persist it per endpoint:
+        same key + same payload returns the same response; same key + different payload
+        returns 409 idempotency_conflict.
+      schema: { type: string }
+    IdempotencyKeyOptional:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Accepted but not required for the non-mutating calculate-totals call.
+      schema: { type: string }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid Bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { type: unauthorized, message: "missing or invalid bearer token" } }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { type: not_found, message: "sku XXX not found" } }
+    BadRequest:
+      description: Invalid request (e.g. missing or too many skus).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { type: invalid_request, message: "max 200 skus per call" } }
+    Conflict:
+      description: >-
+        Idempotency mismatch or business-rule violation — error.type is one of
+        idempotency_conflict, inventory_oversold, reservation_expired.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { error: { type: idempotency_conflict, message: "same key, different payload" } }
+    InternalError:
+      description: Server error on your side; the platform may retry or mark the connection unhealthy.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok], description: "\"ok\" when healthy." }
+        version: { type: string, example: v1 }
+
+    ProductList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Product" }
+        next_cursor:
+          type: [string, "null"]
+          description: Opaque cursor for the next page, or null on the last page.
+        total:
+          type: integer
+          description: Optional total count (convenience only).
+
+    Product:
+      type: object
+      required: [id, title, category_id, variants]
+      properties:
+        id: { type: string, example: prd_trail_fleece }
+        title: { type: string, example: "Trailhead Fleece Jacket" }
+        description: { type: [string, "null"] }
+        category_id: { type: string, example: fleece }
+        vendor: { type: [string, "null"], example: "Northwild Outfitters" }
+        tags:
+          type: array
+          items: { type: string }
+          example: [fleece, jacket]
+        images:
+          type: array
+          items: { type: string, format: uri }
+        variants:
+          type: array
+          items: { $ref: "#/components/schemas/Variant" }
+        updated_at:
+          type: [string, "null"]
+          format: date-time
+          description: ISO 8601 UTC; enables incremental sync.
+          example: "2026-05-10T08:00:00Z"
+
+    Variant:
+      type: object
+      required: [sku, price]
+      properties:
+        sku:
+          type: string
+          description: Unique within your store; the system-wide primary key.
+          example: NWO-TRAIL-FLC-S-NAVY
+        title:
+          type: [string, "null"]
+          description: Optional variant display name.
+          example: "S · Navy"
+        attributes:
+          type: object
+          additionalProperties: { type: string }
+          description: Free-form variant options (size, color, material…). Extensible.
+          example: { size: "S", color: "Navy" }
+        price: { $ref: "#/components/schemas/Price" }
+        inventory:
+          type: [integer, "null"]
+          description: Available quantity. Return 0 (not null) for out-of-stock.
+          example: 8
+
+    Price:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: string
+          description: Decimal string to avoid float drift, e.g. "189.00".
+          example: "189.00"
+        currency:
+          type: string
+          description: ISO 4217 three-letter code.
+          example: USD
+
+    CategoryList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Category" }
+
+    Category:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, example: fleece }
+        name: { type: string, example: "Fleece Jackets" }
+        parent_id:
+          type: [string, "null"]
+          description: Points to another Category.id; null for a root category.
+          example: outerwear
+
+    InventoryList:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/InventoryItem" }
+
+    InventoryItem:
+      type: object
+      required: [sku, available]
+      properties:
+        sku: { type: string, example: TENT-2P-GREEN }
+        available: { type: integer, example: 12 }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              description: Machine-readable code.
+              enum: [unauthorized, not_found, invalid_request, conflict, internal_error, inventory_oversold, reservation_expired, idempotency_conflict]
+            message: { type: string, description: Human-readable explanation. }
+            details: { type: object, additionalProperties: true }
+
+    # ── Checkout schemas (optional capability; finalized v1) ──
+    ReserveRequest:
+      type: object
+      required: [skus_qty]
+      properties:
+        skus_qty:
+          type: object
+          additionalProperties: { type: integer, minimum: 1 }
+          description: SKU → requested quantity.
+          example: { TENT-2P-GREEN: 2, STOVE-MSR: 1 }
+        currency:
+          type: string
+          description: ISO 4217 (optional context).
+          example: USD
+
+    ReserveResult:
+      type: object
+      required: [status, per_sku_available]
+      properties:
+        status:
+          type: string
+          enum: [ok, oversold]
+          description: '"oversold" is a 200 business outcome, not an HTTP error.'
+        per_sku_available:
+          type: object
+          additionalProperties: { type: integer }
+          description: Live availability per SKU; keys align with the request skus_qty.
+          example: { TENT-2P-GREEN: 12, STOVE-MSR: 0 }
+        oversold_skus:
+          type: array
+          items: { type: string }
+          description: Present when status=oversold — SKUs below requested quantity.
+          example: [STOVE-MSR]
+        reservation: { $ref: "#/components/schemas/Reservation" }
+        metadata: { type: object, additionalProperties: true }
+
+    Reservation:
+      type: object
+      description: Optional merchant hold; the platform folds it into the reservation metadata.
+      required: [id, expires_at]
+      properties:
+        id: { type: string, example: rsv_abc }
+        expires_at:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC; recommended hold 5-15 minutes.
+          example: "2026-06-17T12:15:00Z"
+
+    CartLineItem:
+      type: object
+      required: [sku, quantity, unit_price_cents]
+      properties:
+        sku: { type: string, example: TENT-2P-GREEN }
+        quantity: { type: integer, minimum: 1, example: 2 }
+        unit_price_cents:
+          type: integer
+          description: Integer cents.
+          example: 29900
+
+    ShippingAddress:
+      type: object
+      required: [line1, city, region, postal_code, country]
+      properties:
+        line1: { type: string }
+        line2: { type: [string, "null"] }
+        city: { type: string }
+        region:
+          type: string
+          description: State / province / region code.
+        postal_code: { type: string }
+        country:
+          type: string
+          description: ISO 3166-1 alpha-2.
+          example: US
+
+    BuyerInfo:
+      type: object
+      required: [email]
+      description: One-time buyer contact; your OMS becomes the system of record.
+      properties:
+        email: { type: string, format: email }
+        first_name: { type: [string, "null"] }
+        last_name: { type: [string, "null"] }
+        phone:
+          type: [string, "null"]
+          description: E.164 if provided.
+
+    TotalsRequest:
+      type: object
+      required: [items, currency]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CartLineItem" }
+        currency: { type: string, example: USD }
+        shipping_address:
+          description: null for digital goods.
+          oneOf:
+            - $ref: "#/components/schemas/ShippingAddress"
+            - type: "null"
+        promotion_codes:
+          type: array
+          items: { type: string }
+          example: [SAVE10]
+
+    BreakdownItem:
+      type: object
+      required: [type, display_text, amount]
+      properties:
+        type: { type: string, example: discount }
+        display_text: { type: string, example: SAVE10 }
+        amount:
+          type: integer
+          description: Cents; negative for discounts.
+          example: -5980
+
+    LineItemTotal:
+      type: object
+      required: [sku, quantity]
+      properties:
+        sku: { type: string }
+        title: { type: [string, "null"] }
+        quantity: { type: integer }
+        original_unit_price_cents: { type: integer }
+        discounted_unit_price_cents: { type: integer }
+        total_discount_cents: { type: integer }
+
+    TotalsBreakdown:
+      type: object
+      required: [subtotal_cents, tax_cents, shipping_cents, discount_cents, total_cents, currency]
+      properties:
+        subtotal_cents: { type: integer, example: 59800 }
+        tax_cents: { type: integer, example: 4800 }
+        shipping_cents: { type: integer, example: 1000 }
+        discount_cents:
+          type: integer
+          description: Non-negative. total = subtotal + tax + shipping - discount.
+          example: 5980
+        total_cents: { type: integer, example: 59620 }
+        currency: { type: string, example: USD }
+        breakdown:
+          type: array
+          items: { $ref: "#/components/schemas/BreakdownItem" }
+        line_items:
+          type: array
+          items: { $ref: "#/components/schemas/LineItemTotal" }
+        metadata:
+          type: object
+          additionalProperties: true
+          description: May include rejected_promotion_codes[] (invalid codes; totals still returned).
+          example: { rejected_promotion_codes: [] }
+
+    CompleteOrderRequest:
+      type: object
+      required: [cart_id, currency, items, buyer, totals]
+      properties:
+        cart_id: { type: string, example: "0190-uuidv7" }
+        currency: { type: string, example: USD }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CartLineItem" }
+        buyer: { $ref: "#/components/schemas/BuyerInfo" }
+        shipping_address:
+          description: null for digital goods.
+          oneOf:
+            - $ref: "#/components/schemas/ShippingAddress"
+            - type: "null"
+        totals: { $ref: "#/components/schemas/TotalsBreakdown" }
+        promotion_codes:
+          type: array
+          items: { type: string }
+        payment_authorization_id:
+          type: [string, "null"]
+          description: Gateway-side ref for the already-authorized payment (reconciliation). Never a raw token.
+        reservation_id:
+          type: [string, "null"]
+          description: From the reserve step, if any.
+        metadata: { type: object, additionalProperties: true }
+
+    OrderResult:
+      type: object
+      required: [merchant_order_id, status, total_cents, currency]
+      properties:
+        merchant_order_id: { type: string, example: "456" }
+        confirmation_number: { type: [string, "null"], example: "#1001" }
+        status:
+          type: string
+          enum: [created, pending, paid, failed, cancelled]
+        total_cents: { type: integer, example: 59620 }
+        currency: { type: string, example: USD }
+        metadata: { type: object, additionalProperties: true }
+
+    CreateHostedRequest:
+      type: object
+      required: [cart_id, currency, items, buyer]
+      properties:
+        cart_id: { type: string, example: "0190-uuidv7" }
+        currency: { type: string, example: USD }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CartLineItem" }
+        buyer: { $ref: "#/components/schemas/BuyerInfo" }
+        shipping_address:
+          description: null for digital goods.
+          oneOf:
+            - $ref: "#/components/schemas/ShippingAddress"
+            - type: "null"
+        promotion_codes:
+          type: array
+          items: { type: string }
+
+    CreateHostedResult:
+      type: object
+      required: [checkout_url, checkout_ref, total_cents, currency]
+      properties:
+        checkout_url:
+          type: string
+          description: >-
+            Buyer-facing hosted payment page URL. MUST be same-origin with the store URL you
+            configured in the dashboard (the platform enforces an open-redirect guard).
+          example: "https://shop.example.com/checkout/chk_0190-uuidv7"
+        checkout_ref:
+          type: string
+          description: Correlation key the platform stores and later polls with (reconcile).
+          example: "chk_0190-uuidv7"
+        total_cents: { type: integer, example: 20412 }
+        currency: { type: string, example: USD }
+
+    HostedReconcileResult:
+      type: object
+      required: [status, order_id, total_cents, currency]
+      properties:
+        status:
+          type: string
+          enum: [pending, paid, cancelled]
+        order_id:
+          type: [string, "null"]
+          description: >-
+            The created order id. Always present in the response; a non-null string when
+            status is `paid`, null while pending/cancelled. The platform reconciles only on
+            `paid` and requires a non-null order_id there.
+          example: "1001"
+        order_number:
+          type: [string, "null"]
+          example: "#1001"
+        total_cents: { type: integer, example: 20412 }
+        currency: { type: string, example: USD }
+      # paid ⟹ order_id MUST be a non-null string (the platform cannot reconcile otherwise).
+      allOf:
+        - if:
+            properties: { status: { const: paid } }
+            required: [status]
+          then:
+            properties: { order_id: { type: string } }
+            required: [order_id]

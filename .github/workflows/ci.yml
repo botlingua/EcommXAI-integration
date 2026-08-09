@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  openapi-lint:
+    name: Lint OpenAPI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Spectral lint
+        run: npx --yes @stoplight/spectral-cli@6 lint --ruleset .spectral.yaml openapi/custom-rest.v1.yaml
+
+  starter-smoke-node:
+    name: Node starter smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/merchant-starter-node
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install --no-audit --no-fund
+      - name: Boot + smoke
+        run: |
+          PORT=3000 node src/server.js &
+          for i in $(seq 1 15); do curl -sf http://localhost:3000/health && break || sleep 1; done
+          curl -sf http://localhost:3000/health
+          curl -sf -H "Authorization: Bearer dev-bearer-replace-me" "http://localhost:3000/products?limit=2"
+          curl -sf -H "Authorization: Bearer dev-bearer-replace-me" "http://localhost:3000/categories"
+
+  starter-smoke-python:
+    name: Python starter smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/merchant-starter-python
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Boot + smoke
+        run: |
+          PORT=8000 python -m uvicorn app.main:app --port 8000 &
+          for i in $(seq 1 15); do curl -sf http://localhost:8000/health && break || sleep 1; done
+          curl -sf http://localhost:8000/health
+          curl -sf -H "Authorization: Bearer dev-bearer-replace-me" "http://localhost:8000/products?limit=2"

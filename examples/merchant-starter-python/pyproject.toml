@@ -1,0 +1,20 @@
+[project]
+name = "ecommxai-merchant-starter-python"
+version = "0.1.0"
+description = "EcommX AI 商家整合 starter — Python / FastAPI (5 day-1 commerce endpoint + OAuth AS module)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.20",
+    "PyJWT[crypto]>=2.10",
+    "cryptography>=43",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
