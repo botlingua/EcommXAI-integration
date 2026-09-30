@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Demo store - thank you</title>
+    <link rel="stylesheet" href="assets/site.css" />
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <h1>Thank you for your order</h1>
+        <p>Order <strong id="order-id"></strong></p>
+        <p class="muted" id="demo-status" role="status">Starting...</p>
+        <p><a class="button ghost" id="back" href="index.html">Back to the store</a></p>
+      </div>
+    </main>
+
+    <script src="assets/demo-cart.js"></script>
+    <script>
+      // In a real store your server renders the order into this page. The demo takes the
+      // order ID from the address and the lines from the browser cart.
+      var orderId = new URLSearchParams(location.search).get("order");
+      document.getElementById("order-id").textContent = orderId || "(no order in the address)";
+
+      demoCart.get().then(function (cart) {
+        if (!orderId) return; // no order: report nothing
+
+        var lines = cart.items.map(function (item) {
+          return { sku: item.sku, quantity: item.quantity, price: item.price };
+        });
+        var total = cart.items.reduce(function (sum, item) {
+          return sum + Number(item.price) * item.quantity;
+        }, 0);
+
+        // Step 3, line 2: report the order. This runs BEFORE the assistant has loaded, and that is
+        // fine: the call waits in the queue. Reloading this page does not count the order twice.
+        (window.EcommXAIWidgetQueue = window.EcommXAIWidgetQueue || []).push(["track", "order_placed", {
+          order_id: orderId,
+          order_number: orderId.slice(-4),
+          total_price: total.toFixed(2),
+          currency: "TWD",
+          financial_status: "paid",
+          line_items: lines
+        }]);
+
+        demoCart.clear();
+      });
+    </script>
+
+    <!-- Step 1: the install code goes on the thank-you page too. -->
+    <script src="assets/config.js"></script>
+    <script src="assets/install.js"></script>
+  </body>
+</html>

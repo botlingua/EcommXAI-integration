@@ -1,0 +1,10 @@
+services:
+  merchant:
+    build: .
+    image: ecommxai-merchant-starter-python:latest
+    ports:
+      - "3000:3000"
+    environment:
+      MODULE: commerce
+      MERCHANT_BEARER: dev-bearer-replace-me
+      PORT: "3000"

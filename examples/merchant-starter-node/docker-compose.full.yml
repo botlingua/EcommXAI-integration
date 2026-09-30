@@ -1,0 +1,13 @@
+services:
+  merchant:
+    build: .
+    image: ecommxai-merchant-starter-node:latest
+    ports:
+      - "3000:3000"
+    environment:
+      MODULE: full
+      MERCHANT_BEARER: dev-bearer-replace-me
+      OAUTH_ISSUER: http://localhost:3000
+      OAUTH_CLIENT_ID: client_ecommxai_demo
+      OAUTH_CLIENT_SECRET: demo-secret
+      PORT: "3000"
