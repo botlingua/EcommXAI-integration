@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Demo store - product page</title>
+    <link rel="stylesheet" href="assets/site.css" />
+  </head>
+  <body>
+    <main>
+      <div class="card">
+        <h1>Demo store</h1>
+        <p class="muted" id="demo-status" role="status">Starting...</p>
+      </div>
+
+      <div class="card">
+        <h2>Windproof jacket</h2>
+        <p>NT$ 1,450 &middot; SKU <code>NW-JKT-01</code></p>
+        <p>
+          <button type="button" id="add-to-cart">Add to cart</button>
+          <a class="button ghost" id="checkout" href="thank-you.html">Check out</a>
+        </p>
+        <p class="muted" id="cart-line" role="status">Cart: 0 items</p>
+      </div>
+    </main>
+
+    <script src="assets/demo-cart.js"></script>
+
+    <!-- Step 2 (optional): the cart bridge. Define it BEFORE the install code. -->
+    <script>
+      window.EcommXAIWidgetActions = {
+        // items: [{ variant_ref, quantity, title?, merchant_sku?, product_url? }]
+        async addToCart(items) {
+          for (const item of items) {
+            const res = await demoCart.add({ sku: item.variant_ref, quantity: item.quantity }); // <- your cart API
+            if (res.status === 409) {
+              return { ok: false, reason: "out_of_stock", message: "Out of stock" };
+            }
+            if (!res.ok) return { ok: false, reason: "error" };
+          }
+          showCart();
+          return { ok: true, itemCount: await this.getCartCount() };
+        },
+        async getCartCount() {
+          const res = await demoCart.get();
+          return res.ok ? res.item_count : null;
+        },
+        cartUrl: "thank-you.html",
+      };
+    </script>
+
+    <script>
+      async function showCart() {
+        const cart = await demoCart.get();
+        document.getElementById("cart-line").textContent = "Cart: " + cart.item_count + " item(s)";
+      }
+
+      document.getElementById("add-to-cart").addEventListener("click", async function () {
+        const res = await demoCart.add({ sku: "NW-JKT-01", quantity: 1, price: "1450.00" }); // <- your cart API
+        if (!res.ok) return; // failed: report nothing
+        showCart();
+
+        // Step 3, line 1: report add-to-cart AFTER your cart API succeeded.
+        (window.EcommXAIWidgetQueue = window.EcommXAIWidgetQueue || []).push(["track", "cart_added"]);
+      });
+
+      // The demo has no checkout. "Check out" invents an order ID and goes to the thank-you page.
+      document.getElementById("checkout").addEventListener("click", function (event) {
+        event.preventDefault();
+        const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+        const serial = String(Math.floor(Math.random() * 9000) + 1000);
+        const next = new URL("thank-you.html", location.href);
+        next.searchParams.set("order", "A" + day + "-" + serial);
+        location.href = next.toString();
+      });
+
+      showCart();
+    </script>
+
+    <!-- Step 1: the install code. On your real site, paste the one from your dashboard here. -->
+    <script src="assets/config.js"></script>
+    <script src="assets/install.js"></script>
+  </body>
+</html>
